@@ -22,13 +22,15 @@ export async function exportToSVGString(
 function measureSpanContentHeight(span: HTMLElement): number {
   const prevHeight = span.style.height;
   const prevOverflow = span.style.overflow;
-  span.style.height = 'max-content';
-  span.style.overflow = 'hidden';
-  void span.offsetHeight; // force reflow
-  const height = span.scrollHeight;
-  span.style.height = prevHeight;
-  span.style.overflow = prevOverflow;
-  return height;
+  try {
+    span.style.height = 'max-content';
+    span.style.overflow = 'hidden';
+    void span.offsetHeight; // force reflow
+    return span.scrollHeight;
+  } finally {
+    span.style.height = prevHeight;
+    span.style.overflow = prevOverflow;
+  }
 }
 
 // Returns [contentTopSVG, contentBottomSVG] for a foreignObject, accounting for
@@ -90,7 +92,8 @@ function computeFullViewBox(svg: SVGSVGElement): string | null {
 
   const newY = minY;
   const newHeight = maxY - newY;
-  if (newHeight <= viewBox.height + 0.5 && newY >= viewBox.y - 0.5) return null;
+  const tolerance = 0.5;
+  if (newHeight <= viewBox.height + tolerance && newY >= viewBox.y - tolerance) return null;
 
   return `${viewBox.x} ${newY} ${viewBox.width} ${newHeight}`;
 }
