@@ -12,6 +12,16 @@ import {
 } from './schema';
 import type { ObjectSchema, SyntaxNode, SyntaxParseResult } from './types';
 
+const ALLOWED_ROOT_KEYS = new Set([
+  'infographic',
+  'template',
+  'design',
+  'data',
+  'theme',
+  'width',
+  'height',
+]);
+
 function normalizeItems(items: ItemDatum[]) {
   const seen = new Set<string>();
   const normalized: ItemDatum[] = [];
@@ -30,6 +40,14 @@ function normalizeItems(items: ItemDatum[]) {
   return normalized.reverse();
 }
 
+function assignMissingNodeIds(items: ItemDatum[]) {
+  items.forEach((item) => {
+    if (!item.id && item.label) {
+      item.id = item.label;
+    }
+  });
+}
+
 function resolveTemplate(
   node: SyntaxNode | undefined,
   errors: SyntaxParseResult['errors'],
@@ -44,12 +62,54 @@ function resolveTemplate(
   return undefined;
 }
 
+function inferTemplateFromBareFirstLine(
+  entries: Record<string, SyntaxNode>,
+  warnings: SyntaxParseResult['warnings'],
+) {
+  if ('infographic' in entries || 'template' in entries) {
+    return undefined;
+  }
+
+  const [firstEntry] = Object.entries(entries);
+  if (!firstEntry) return undefined;
+
+  const [key, node] = firstEntry;
+  if (ALLOWED_ROOT_KEYS.has(key) || node.kind !== 'object') {
+    return undefined;
+  }
+  if (node.value !== undefined || Object.keys(node.entries).length > 0) {
+    return undefined;
+  }
+
+  warnings.push({
+    path: 'template',
+    line: node.line,
+    code: 'implicit_template',
+    message:
+      'Inferred template from a bare first line. Prefix it with "infographic" or "template" to make the syntax explicit.',
+    raw: key,
+  });
+
+  return {
+    template: key,
+    inferredKey: key,
+  };
+}
+
 export function parseSyntax(input: string): SyntaxParseResult {
   const { ast, errors } = parseSyntaxToAst(input);
   const warnings: SyntaxParseResult['warnings'] = [];
   const options: Partial<InfographicOptions> = {};
 
   const mergedEntries = { ...ast.entries };
+  const inferredTemplate = inferTemplateFromBareFirstLine(
+    ast.entries,
+    warnings,
+  );
+  if (inferredTemplate) {
+    delete mergedEntries[inferredTemplate.inferredKey];
+  }
+
   const infographicNode = ast.entries.infographic;
   let templateFromInfographic: string | undefined;
   if (infographicNode && infographicNode.kind === 'object') {
@@ -59,17 +119,8 @@ export function parseSyntax(input: string): SyntaxParseResult {
     });
   }
 
-  const allowedRootKeys = new Set([
-    'infographic',
-    'template',
-    'design',
-    'data',
-    'theme',
-    'width',
-    'height',
-  ]);
   Object.keys(mergedEntries).forEach((key) => {
-    if (!allowedRootKeys.has(key)) {
+    if (!ALLOWED_ROOT_KEYS.has(key)) {
       errors.push({
         path: key,
         line: (mergedEntries[key] as SyntaxNode).line,
@@ -85,6 +136,9 @@ export function parseSyntax(input: string): SyntaxParseResult {
   if (templateValue) options.template = templateValue;
   if (!options.template && templateFromInfographic) {
     options.template = templateFromInfographic;
+  }
+  if (!options.template && inferredTemplate) {
+    options.template = inferredTemplate.template;
   }
 
   const designNode = mergedEntries.design as SyntaxNode | undefined;
@@ -112,6 +166,13 @@ export function parseSyntax(input: string): SyntaxParseResult {
       );
       if (parsed.relations.length > 0 || parsed.items.length > 0) {
         const current = (options.data ?? {}) as Record<string, any>;
+
+        if (Array.isArray(current.items)) {
+          assignMissingNodeIds(current.items as ItemDatum[]);
+        }
+        if (Array.isArray(current.nodes)) {
+          assignMissingNodeIds(current.nodes as ItemDatum[]);
+        }
 
         // 优先使用已存在的数据列表 (sequences, lists, etc.)
         const dataKeys = Object.keys(
