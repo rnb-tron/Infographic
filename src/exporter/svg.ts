@@ -60,33 +60,88 @@ function measureSpanContentHeight(span: HTMLElement): number {
   }
 }
 
-// Returns [contentTopSVG, contentBottomSVG] for a foreignObject, accounting for
-// flex alignment: bottom-aligned content overflows upward, center overflows both ways.
+function measureSpanContentWidth(span: HTMLElement): number {
+  const prevWidth = span.style.width;
+  const prevOverflow = span.style.overflow;
+  try {
+    span.style.width = 'max-content';
+    span.style.overflow = 'hidden';
+    void span.offsetWidth; // force reflow
+    return span.scrollWidth;
+  } finally {
+    span.style.width = prevWidth;
+    span.style.overflow = prevOverflow;
+  }
+}
+
+// Returns [left, top, right, bottom] in SVG coordinates for a foreignObject,
+// accounting for flex alignment: bottom/center-aligned content can overflow,
+// and horizontally aligned content can overflow as well.
 function getFOContentBoundsInSVG(
   fo: SVGForeignObjectElement,
-  span: HTMLElement,
+  content: HTMLElement,
   toSVGCoord: (x: number, y: number) => SVGPoint,
-): [number, number] {
+): [number, number, number, number] {
   const foRect = fo.getBoundingClientRect();
-  const foTopSVG = toSVGCoord(foRect.left, foRect.top).y;
-  const foBottomSVG = toSVGCoord(foRect.left, foRect.bottom).y;
+  const foTopLeft = toSVGCoord(foRect.left, foRect.top);
+  const foBottomRight = toSVGCoord(foRect.right, foRect.bottom);
+
+  const foLeftSVG = foTopLeft.x;
+  const foTopSVG = foTopLeft.y;
+  const foRightSVG = foBottomRight.x;
+  const foBottomSVG = foBottomRight.y;
+
+  const foWidthSVG = foRightSVG - foLeftSVG;
   const foHeightSVG = foBottomSVG - foTopSVG;
-  const svgUnitsPerClientPx =
+
+  const svgUnitsPerClientPxY =
     foRect.height > 0 ? foHeightSVG / foRect.height : 1;
+  const svgUnitsPerClientPxX = foRect.width > 0 ? foWidthSVG / foRect.width : 1;
 
-  const realScrollHeight = measureSpanContentHeight(span);
+  // Measure actual content dimensions
+  const realScrollHeight = measureSpanContentHeight(content);
   const contentHeightSVG =
-    realScrollHeight > 0 ? realScrollHeight * svgUnitsPerClientPx : foHeightSVG;
+    realScrollHeight > 0
+      ? realScrollHeight * svgUnitsPerClientPxY
+      : foHeightSVG;
 
-  const alignItems = span.style.alignItems;
+  const realScrollWidth = measureSpanContentWidth(content);
+  const contentWidthSVG =
+    realScrollWidth > 0 ? realScrollWidth * svgUnitsPerClientPxX : foWidthSVG;
+
+  const computedStyle = window.getComputedStyle(content);
+  const alignItems = computedStyle.alignItems;
+  const justifyContent = computedStyle.justifyContent;
+
+  // Calculate vertical bounds
+  let top: number, bottom: number;
   if (alignItems === 'flex-end') {
-    return [foBottomSVG - contentHeightSVG, foBottomSVG];
+    top = foBottomSVG - contentHeightSVG;
+    bottom = foBottomSVG;
+  } else if (alignItems === 'center') {
+    const overflowY = contentHeightSVG - foHeightSVG;
+    top = foTopSVG - overflowY / 2;
+    bottom = foBottomSVG + overflowY / 2;
+  } else {
+    top = foTopSVG;
+    bottom = foTopSVG + contentHeightSVG;
   }
-  if (alignItems === 'center') {
-    const overflow = contentHeightSVG - foHeightSVG;
-    return [foTopSVG - overflow / 2, foBottomSVG + overflow / 2];
+
+  // Calculate horizontal bounds
+  let left: number, right: number;
+  if (justifyContent === 'flex-end' || justifyContent === 'end') {
+    left = foRightSVG - contentWidthSVG;
+    right = foRightSVG;
+  } else if (justifyContent === 'center') {
+    const overflowX = contentWidthSVG - foWidthSVG;
+    left = foLeftSVG - overflowX / 2;
+    right = foRightSVG + overflowX / 2;
+  } else {
+    left = foLeftSVG;
+    right = foLeftSVG + contentWidthSVG;
   }
-  return [foTopSVG, foTopSVG + contentHeightSVG];
+
+  return [left, top, right, bottom];
 }
 
 /**
@@ -110,28 +165,40 @@ function computeFullViewBox(svg: SVGSVGElement): string | null {
     return pt.matrixTransform(inverseCTM);
   };
 
+  let minX = viewBox.x;
   let minY = viewBox.y;
+  let maxX = viewBox.x + viewBox.width;
   let maxY = viewBox.y + viewBox.height;
 
   svg
     .querySelectorAll<SVGForeignObjectElement>('foreignObject')
     .forEach((fo) => {
-      const span = fo.querySelector<HTMLElement>('span');
-      if (!span) return;
-      const [top, bottom] = getFOContentBoundsInSVG(fo, span, toSVGCoord);
+      const content = fo.firstElementChild as HTMLElement;
+      if (!content) return;
+      const [left, top, right, bottom] = getFOContentBoundsInSVG(
+        fo,
+        content,
+        toSVGCoord,
+      );
+      minX = Math.min(minX, left);
       minY = Math.min(minY, top);
+      maxX = Math.max(maxX, right);
       maxY = Math.max(maxY, bottom);
     });
 
+  const newX = minX;
   const newY = minY;
+  const newWidth = maxX - newX;
   const newHeight = maxY - newY;
   if (
+    newWidth <= viewBox.width + VIEWBOX_CHANGE_TOLERANCE &&
     newHeight <= viewBox.height + VIEWBOX_CHANGE_TOLERANCE &&
+    newX >= viewBox.x - VIEWBOX_CHANGE_TOLERANCE &&
     newY >= viewBox.y - VIEWBOX_CHANGE_TOLERANCE
   )
     return null;
 
-  return `${viewBox.x} ${newY} ${viewBox.width} ${newHeight}`;
+  return `${newX} ${newY} ${newWidth} ${newHeight}`;
 }
 
 export async function exportToSVG(
