@@ -115,7 +115,7 @@ function getFOContentBoundsInSVG(
 
   // Calculate vertical bounds
   let top: number, bottom: number;
-  if (alignItems === 'flex-end') {
+  if (alignItems === 'flex-end' || alignItems === 'end') {
     top = foBottomSVG - contentHeightSVG;
     bottom = foBottomSVG;
   } else if (alignItems === 'center') {
@@ -129,7 +129,11 @@ function getFOContentBoundsInSVG(
 
   // Calculate horizontal bounds
   let left: number, right: number;
-  if (justifyContent === 'flex-end' || justifyContent === 'end') {
+  if (
+    justifyContent === 'flex-end' ||
+    justifyContent === 'end' ||
+    justifyContent === 'right'
+  ) {
     left = foRightSVG - contentWidthSVG;
     right = foRightSVG;
   } else if (justifyContent === 'center') {
